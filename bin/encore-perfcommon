@@ -1,0 +1,103 @@
+#!/system/bin/sh
+
+# Sync to data in the rare case a device crashes
+sync
+
+# Push Notification
+su -lp 2000 -c "cmd notification post -S bigtext -t 'ENCORE Tweaks' 'Tag$(date +%s)' 'Tweaks successfully applied.'"
+
+apply() {
+	if [ -f $2 ]; then
+		chmod 644 $2 >/dev/null 2>&1
+		echo $1 >$2 2>/dev/null
+		chmod 444 $2 >/dev/null 2>&1
+	fi
+}
+
+# I/O Tweaks
+for queue in /sys/block/*/queue; do
+	# Disable I/O statistics accounting
+	apply 0 "$queue/iostats"
+
+	# Reduce heuristic read-ahead in exchange for I/O latency
+	apply 128 "$queue/read_ahead_kb"
+
+	# Reduce the maximum number of I/O requests in exchange for latency
+	apply 64 "$queue/nr_requests"
+done
+
+# Lower the swappiness
+MemTotal=$(cat /proc/meminfo | grep MemTotal)
+MemTotal=${MemTotal:16:8}
+
+if [ $MemTotal -gt 7038920 ]; then
+	apply "10" /proc/sys/vm/swappiness
+fi
+
+# Apply governor specific tunables for schedutil
+find /sys/devices/system/cpu/ -name schedutil -type d | while IFS= read -r governor; do
+	# Consider changing frequencies once per scheduling period
+	apply 10000 $governor/up_rate_limit_us
+	apply 20000 $governor/down_rate_limit_us
+done
+
+# Networking tweaks
+apply "cubic" /proc/sys/net/ipv4/tcp_congestion_control
+apply "1" /proc/sys/net/ipv4/tcp_low_latency
+apply "1" /proc/sys/net/ipv4/tcp_ecn
+apply "3" /proc/sys/net/ipv4/tcp_fastopen
+apply "1" /proc/sys/net/ipv4/tcp_sack
+apply "0" /proc/sys/net/ipv4/tcp_timestamps
+
+# Disable ccci debugging
+apply 0 /sys/kernel/ccci/debug
+
+# Thermal governor
+for thermal in /sys/class/thermal/thermal_zone*; do
+	apply "step_wise" ${thermal}/policy
+done
+
+# Stop tracing and debugging
+stop traced
+apply 0 /sys/kernel/tracing/tracing_on
+apply 0 /proc/sys/kernel/perf_event_paranoid
+apply 0 /proc/sys/kernel/debug_locks
+
+# Kill logd
+if [ $(cat /data/encore/kill_logd) -eq 1 ]; then
+	stop logd
+fi
+
+# Disable schedstats
+apply 0 /proc/sys/kernel/sched_schedstats
+
+# Disable Sched auto group
+apply 0 /proc/sys/kernel/sched_autogroup_enabled
+
+# Enable CRF
+apply 1 /proc/sys/kernel/sched_child_runs_first
+
+# Improve real time latencies by reducing the scheduler migration time
+apply 32 /proc/sys/kernel/sched_nr_migrate
+
+# Tweaking scheduler to reduce latency
+apply 50000 /proc/sys/kernel/sched_migration_cost_ns
+apply 1000000 /proc/sys/kernel/sched_min_granularity_ns
+apply 1500000 /proc/sys/kernel/sched_wakeup_granularity_ns
+
+# Disable read-ahead for swap devices
+apply 0 /proc/sys/vm/page-cluster
+
+# Update /proc/stat less often to reduce jitter
+apply 120 /proc/sys/vm/stat_interval
+
+# Disable compaction_proactiveness
+apply 0 /proc/sys/vm/compaction_proactiveness
+
+# Disable SPI CRC
+apply 0 /sys/module/mmc_core/parameters/use_spi_crc
+
+# Disable Oplus bloats
+apply 0 /sys/module/cpufreq_bouncing/parameters/enable
+apply 0 /proc/task_info/task_sched_info/task_sched_info_enable
+apply 0 /proc/oplus_scheduler/sched_assist/sched_assist_enabled
